@@ -267,10 +267,11 @@ export const generateAIChat: StateCreator<
     await Promise.all([summaryTitle(), addFilesToAgent()]);
   },
   stopGenerateMessage: () => {
-    const { abortController, internal_toggleChatLoading } = get();
-    if (!abortController) return;
+    const { chatLoadingIdsAbortController, internal_toggleChatLoading } = get();
 
-    abortController.abort(MESSAGE_CANCEL_FLAT);
+    if (!chatLoadingIdsAbortController) return;
+
+    chatLoadingIdsAbortController.abort(MESSAGE_CANCEL_FLAT);
 
     internal_toggleChatLoading(false, undefined, n('stopGenerateMessage') as string);
   },
@@ -420,6 +421,11 @@ export const generateAIChat: StateCreator<
       ? agentConfig.params.max_tokens
       : undefined;
 
+    // 5. handle reasoning_effort
+    agentConfig.params.reasoning_effort = chatConfig.enableReasoningEffort
+      ? agentConfig.params.reasoning_effort
+      : undefined;
+
     let isFunctionCall = false;
     let msgTraceId: string | undefined;
     let output = '';
@@ -449,7 +455,7 @@ export const generateAIChat: StateCreator<
         await messageService.updateMessageError(messageId, error);
         await refreshMessages();
       },
-      onFinish: async (content, { traceId, observationId, toolCalls, reasoning }) => {
+      onFinish: async (content, { traceId, observationId, toolCalls, reasoning, citations }) => {
         // if there is traceId, update it
         if (traceId) {
           msgTraceId = traceId;
@@ -464,15 +470,26 @@ export const generateAIChat: StateCreator<
         }
 
         // update the content after fetch result
-        await internal_updateMessageContent(
-          messageId,
-          content,
+        await internal_updateMessageContent(messageId, content, {
           toolCalls,
-          !!reasoning ? { content: reasoning, duration } : undefined,
-        );
+          reasoning: !!reasoning ? { content: reasoning, duration } : undefined,
+          search: !!citations ? { citations } : undefined,
+        });
       },
       onMessageHandle: async (chunk) => {
         switch (chunk.type) {
+          case 'citations': {
+            // if there is no citations, then stop
+            if (!chunk.citations || chunk.citations.length <= 0) return;
+
+            internal_dispatchMessage({
+              id: messageId,
+              type: 'updateMessage',
+              value: { search: { citations: chunk.citations } },
+            });
+            break;
+          }
+
           case 'text': {
             output += chunk.text;
 
